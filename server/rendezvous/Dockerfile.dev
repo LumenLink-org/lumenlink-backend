@@ -1,0 +1,21 @@
+FROM golang:1.21-alpine AS dev
+
+# Install build dependencies
+RUN apk add --no-cache git make gcc musl-dev
+
+# Install Air for hot reload
+RUN go install github.com/cosmtrek/air@v1.49.0
+
+WORKDIR /app
+
+# Copy all source code first
+COPY . .
+
+# Generate go.sum and download dependencies
+RUN go mod tidy && go mod download
+
+# Expose port
+EXPOSE 8080
+
+# Run with Air for hot reload
+CMD ["air", "-c", ".air.toml"]

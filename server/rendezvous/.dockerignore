@@ -1,0 +1,40 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+tmp/
+bin/
+
+# Go specific
+vendor/
+*.mod.sum.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test files
+*_test.go
+testdata/
+
+# Air temp files
+tmp/
+
+# Git
+.git/
+.gitignore
