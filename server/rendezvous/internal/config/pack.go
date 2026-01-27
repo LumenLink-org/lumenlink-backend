@@ -11,9 +11,15 @@ import (
 	"sort"
 	"time"
 
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/attestation"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+	"rendezvous/internal/db"
+	// "github.com/LumenLink-org/lumenlink/rendezvous/internal/db"
 )
+
+// AttestationResult represents the result of attestation verification
+type AttestationResult struct {
+	IsValid        bool
+	DeviceIntegrity string
+}
 
 // SignedConfigPack represents a signed configuration pack
 type SignedConfigPack struct {

@@ -10,11 +10,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/api"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/attestation"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/config"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/geo"
+	"rendezvous/internal/api"
+	"rendezvous/internal/attestation"
+	"rendezvous/internal/config"
+	"rendezvous/internal/db"
+	"rendezvous/internal/geo"
+	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/api"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/attestation"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/config"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/geo"
 )
 
 func main() {
@@ -50,8 +55,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize config service: %v", err)
 	}
-	attestationService := attestation.NewAttestationService()
-	geoBalancer := geo.NewGeoBalancer()
+	attestationService := attestation.NewAttestationService(database)
+	geoBalancer := geo.NewBalancer(database)
 
 	// Initialize API handler
 	handler := api.NewHandler(configService, attestationService, geoBalancer, database)

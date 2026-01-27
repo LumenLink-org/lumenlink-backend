@@ -5,7 +5,8 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+	"rendezvous/internal/db"
+	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
 )
 
 // GeoBalancer handles geo-load balancing for gateway selection

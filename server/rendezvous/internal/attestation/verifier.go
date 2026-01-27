@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+	"rendezvous/internal/db"
+	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
 )
 
 // AttestationResult represents the result of attestation verification

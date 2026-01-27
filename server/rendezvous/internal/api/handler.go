@@ -4,10 +4,14 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/attestation"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/config"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/geo"
+	"rendezvous/internal/attestation"
+	"rendezvous/internal/config"
+	"rendezvous/internal/db"
+	"rendezvous/internal/geo"
+	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/attestation"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/config"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/geo"
 )
 
 // Handler handles HTTP API requests
@@ -85,12 +89,21 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		}
 	}
 
+	// Convert attestation result to config package type
+	var configAttestationResult *config.AttestationResult
+	if attestationResult != nil {
+		configAttestationResult = &config.AttestationResult{
+			IsValid:         attestationResult.IsValid,
+			DeviceIntegrity: attestationResult.DeviceIntegrity,
+		}
+	}
+
 	// Generate config pack
 	pack, err := h.configService.GenerateConfigPack(
 		c.Request.Context(),
 		req.DeviceID,
 		region,
-		attestationResult,
+		configAttestationResult,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_generation_failed"})

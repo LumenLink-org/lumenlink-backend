@@ -8,11 +8,20 @@ RUN go install github.com/cosmtrek/air@v1.49.0
 
 WORKDIR /app
 
-# Copy all source code first
+# Copy go.mod first
+COPY go.mod ./
+
+# Generate go.sum with all dependencies
+RUN go mod download 2>/dev/null || true
+
+# Copy all source code
 COPY . .
 
-# Generate go.sum and download dependencies
-RUN go mod tidy && go mod download
+# Force regenerate go.sum and download all dependencies
+RUN go mod tidy -v && go mod download -x
+
+# Test build to verify everything compiles
+RUN go build -o /tmp/test-build ./cmd/server && rm /tmp/test-build
 
 # Expose port
 EXPOSE 8080

@@ -6,7 +6,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+	"rendezvous/internal/db"
+	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
 )
 
 func main() {

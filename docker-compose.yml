@@ -51,6 +51,7 @@ services:
       DATABASE_URL: postgres://${DB_USER:-lumenlink}:${DB_PASSWORD:-dev_password_change_me}@postgres:5432/${DB_NAME:-lumenlink_dev}?sslmode=disable
       REDIS_URL: redis://redis:6379
       PORT: 8080
+      LUMENLINK_ALLOW_EPHEMERAL_SIGNING_KEY: ${LUMENLINK_ALLOW_EPHEMERAL_SIGNING_KEY:-true}
     ports:
       - "8080:8080"
     depends_on:
