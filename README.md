@@ -2,6 +2,8 @@
 
 Backend services for the LumenLink platform. This folder runs the Go `rendezvous` API plus supporting services (PostgreSQL/TimescaleDB, Redis, Prometheus, Grafana) using Docker Compose.
 
+**Website:** [lumenlink.org](https://lumenlink.org) · [Documentation](https://lumenlink.org/en/docs) · **API:** [api.lumenlink.org](https://api.lumenlink.org)
+
 The backend is responsible for:
 - Serving the control-plane API used by clients and the web app
 - Managing gateway/relay metadata and discovery signals
@@ -10,11 +12,11 @@ The backend is responsible for:
 
 ## Services
 
-- **Rendezvous API** (Go): `http://localhost:8080`
-- **PostgreSQL/TimescaleDB**: `localhost:5432`
-- **Redis**: `localhost:6379`
-- **Prometheus**: `http://localhost:9090`
-- **Grafana**: `http://localhost:3000`
+- **Rendezvous API** (Go): `http://localhost:8080` (dev) / [https://api.lumenlink.org](https://api.lumenlink.org) (production)
+- **PostgreSQL/TimescaleDB**: `localhost:5432` (dev only)
+- **Redis**: `localhost:6379` (dev only)
+- **Prometheus**: `http://localhost:9090` (dev only)
+- **Grafana**: `http://localhost:3000` (dev only)
 
 ## Quick Start (Docker)
 
@@ -85,4 +87,4 @@ docker logs -f lumenlink-rendezvous
 ## Notes
 
 - Grafana and Prometheus should not be exposed publicly. Prefer localhost access or SSH tunnel.
-- The API is typically exposed via Nginx at `https://api.your-domain`.
+- Production API: [https://api.lumenlink.org](https://api.lumenlink.org) (localhost only for development/testing).

@@ -2,14 +2,24 @@ package attestation
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"log"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"google.golang.org/api/option"
+	playintegrity "google.golang.org/api/playintegrity/v1"
+
+	"github.com/bas-d/appattest/attestation"
 	"rendezvous/internal/db"
-	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
+	"rendezvous/internal/metrics"
 )
 
 // AttestationResult represents the result of attestation verification
@@ -34,20 +44,43 @@ type AttestationRequest struct {
 type AttestationService struct {
 	db *db.Database
 	// In production, these would be API clients for Play Integrity and DCAppAttest
-	playIntegrityAPIKey string
-	appleTeamID         string
-	appleKeyID          string
-	allowBypass         bool
+	playIntegrityClient          *playintegrity.Service
+	playIntegrityInitOnce        sync.Once
+	playIntegrityInitErr         error
+	playIntegrityPackageName     string
+	playIntegrityAllowBasic      bool
+	playIntegrityRequireLicensed bool
+	playIntegrityMaxAge          time.Duration
+	playIntegrityCredentialsFile string
+	playIntegrityCredentialsJSON string
+
+	appleTeamID     string
+	appleBundleID   string
+	appleProduction bool
+	allowBypass     bool
 }
 
 // NewAttestationService creates a new attestation service
 func NewAttestationService(database *db.Database) *AttestationService {
+	playIntegrityMaxAge := 5 * time.Minute
+	if maxAge := strings.TrimSpace(os.Getenv("PLAY_INTEGRITY_MAX_AGE_SECONDS")); maxAge != "" {
+		if seconds, err := strconv.Atoi(maxAge); err == nil && seconds > 0 {
+			playIntegrityMaxAge = time.Duration(seconds) * time.Second
+		}
+	}
+
 	return &AttestationService{
-		db:                  database,
-		playIntegrityAPIKey: os.Getenv("PLAY_INTEGRITY_API_KEY"),
-		appleTeamID:         os.Getenv("APPLE_TEAM_ID"),
-		appleKeyID:          os.Getenv("APPLE_KEY_ID"),
-		allowBypass:         envAllowsBypass(),
+		db:                          database,
+		playIntegrityPackageName:     strings.TrimSpace(os.Getenv("PLAY_INTEGRITY_PACKAGE_NAME")),
+		playIntegrityAllowBasic:      strings.ToLower(os.Getenv("PLAY_INTEGRITY_ALLOW_BASIC")) == "true",
+		playIntegrityRequireLicensed: strings.ToLower(os.Getenv("PLAY_INTEGRITY_REQUIRE_LICENSED")) != "false",
+		playIntegrityMaxAge:          playIntegrityMaxAge,
+		playIntegrityCredentialsFile: strings.TrimSpace(os.Getenv("PLAY_INTEGRITY_CREDENTIALS_FILE")),
+		playIntegrityCredentialsJSON: strings.TrimSpace(os.Getenv("PLAY_INTEGRITY_CREDENTIALS_JSON")),
+		appleTeamID:     strings.TrimSpace(os.Getenv("APPLE_TEAM_ID")),
+		appleBundleID:   strings.TrimSpace(os.Getenv("APPLE_BUNDLE_ID")),
+		appleProduction: strings.ToLower(os.Getenv("APPLE_PRODUCTION")) != "false",
+		allowBypass:     envAllowsBypass(),
 	}
 }
 
@@ -65,6 +98,8 @@ func (s *AttestationService) VerifyAttestation(
 	case "ios":
 		result, err = s.verifyDCAppAttest(ctx, req)
 	default:
+		metrics.AttestationTotal.WithLabelValues(req.Platform, "invalid").Inc()
+		metrics.AttestationFailures.WithLabelValues(req.Platform, "unsupported_platform").Inc()
 		return &AttestationResult{
 			IsValid: false,
 			Reason:  "unsupported_platform",
@@ -72,16 +107,25 @@ func (s *AttestationService) VerifyAttestation(
 	}
 
 	if err != nil {
+		metrics.AttestationTotal.WithLabelValues(req.Platform, "error").Inc()
+		metrics.AttestationFailures.WithLabelValues(req.Platform, "verification_error").Inc()
 		return &AttestationResult{
 			IsValid: false,
 			Reason:  "verification_error",
 		}, err
 	}
 
+	if result.IsValid {
+		metrics.AttestationTotal.WithLabelValues(req.Platform, "valid").Inc()
+	} else {
+		metrics.AttestationTotal.WithLabelValues(req.Platform, "invalid").Inc()
+		metrics.AttestationFailures.WithLabelValues(req.Platform, result.Reason).Inc()
+	}
+
 	// Store attestation record in database
 	if err := s.storeAttestation(ctx, req, result); err != nil {
 		// Log error but don't fail verification
-		// TODO: Add logging
+		log.Printf("attestation store failed for device=%s platform=%s: %v", req.DeviceID, req.Platform, err)
 	}
 
 	return result, nil
@@ -92,69 +136,89 @@ func (s *AttestationService) verifyPlayIntegrity(
 	ctx context.Context,
 	req *AttestationRequest,
 ) (*AttestationResult, error) {
-	// PlayIntegrityVerdict represents the actual response from Google
-	type PlayIntegrityVerdict struct {
-		RequestDetails struct {
-			RequestPackageName string `json:"requestPackageName"`
-			TimestampMillis    int64  `json:"timestampMillis"`
-		} `json:"requestDetails"`
-		AppIntegrity struct {
-			AppRecognitionVerdict string `json:"appRecognitionVerdict"`
-			PackageName           string `json:"packageName"`
-			CertificateSha256     []string `json:"certificateSha256Digest"`
-		} `json:"appIntegrity"`
-		DeviceIntegrity struct {
-			DeviceRecognitionVerdict []string `json:"deviceRecognitionVerdict"`
-		} `json:"deviceIntegrity"`
-		AccountDetails struct {
-			AppLicensingVerdict string `json:"appLicensingVerdict"`
-		} `json:"accountDetails"`
-	}
-
 	result := &AttestationResult{
 		Platform:  "android",
 		DeviceID:  req.DeviceID,
 		Timestamp: time.Now(),
 	}
 
-	// In production, we would use the Google Cloud API client:
-	// verdict, err := s.playIntegrityClient.Integritytoken.Decode(packageName, req.Token).Do()
-	
-	// For testing and initial launch, we implement a validation check that can be
-	// toggled. Real verification requires Google Cloud API credentials.
-	
-	var tokenData map[string]interface{}
-	if err := json.Unmarshal([]byte(req.Token), &tokenData); err != nil {
-		// If not valid JSON (which the real token is not, it's a signed JWS),
-		// we assume it's a real token and check if API is configured.
-		if s.playIntegrityAPIKey == "" {
-			if s.allowBypass {
-				result.IsValid = true
-				result.DeviceIntegrity = "BYPASS_ENABLED"
-				return result, nil
-			}
-			result.IsValid = false
-			result.Reason = "missing_play_integrity_config"
+	if err := s.initPlayIntegrityClient(ctx); err != nil {
+		if s.allowBypass {
+			result.IsValid = true
+			result.DeviceIntegrity = "BYPASS_ENABLED"
 			return result, nil
 		}
 		result.IsValid = false
-		result.Reason = "play_integrity_unimplemented"
+		result.Reason = "play_integrity_not_configured"
 		return result, nil
 	}
 
-	// Dev/Mock mode: if the token is JSON, parse the mocked integrity fields
-	if integrity, ok := tokenData["deviceIntegrity"].(string); ok {
-		result.DeviceIntegrity = integrity
-		if integrity == "MEETS_STRONG_INTEGRITY" || integrity == "MEETS_BASIC_INTEGRITY" {
-			result.IsValid = true
-		} else {
-			result.IsValid = false
-			result.Reason = "device_compromised"
-		}
-	} else {
+	response, err := s.playIntegrityClient.V1.DecodeIntegrityToken(
+		s.playIntegrityPackageName,
+		&playintegrity.DecodeIntegrityTokenRequest{IntegrityToken: req.Token},
+	).Do()
+	if err != nil {
 		result.IsValid = false
-		result.Reason = "invalid_mock_token"
+		result.Reason = "play_integrity_api_error"
+		return result, err
 	}
+
+	payload := response.TokenPayloadExternal
+	if payload == nil || payload.RequestDetails == nil {
+		result.IsValid = false
+		result.Reason = "missing_token_payload"
+		return result, nil
+	}
+
+	if payload.RequestDetails.RequestPackageName != "" &&
+		payload.RequestDetails.RequestPackageName != s.playIntegrityPackageName {
+		result.IsValid = false
+		result.Reason = "package_name_mismatch"
+		return result, nil
+	}
+
+	if payload.RequestDetails.TimestampMillis != "" {
+		if timestampMs, err := strconv.ParseInt(payload.RequestDetails.TimestampMillis, 10, 64); err == nil {
+			tokenTime := time.UnixMilli(timestampMs)
+			if time.Since(tokenTime) > s.playIntegrityMaxAge {
+				result.IsValid = false
+				result.Reason = "attestation_expired"
+				return result, nil
+			}
+		}
+	}
+
+	if payload.AppIntegrity == nil || payload.AppIntegrity.AppRecognitionVerdict != "PLAY_RECOGNIZED" {
+		result.IsValid = false
+		result.Reason = "app_not_recognized"
+		return result, nil
+	}
+
+	if s.playIntegrityRequireLicensed {
+		if payload.AccountDetails == nil || payload.AccountDetails.AppLicensingVerdict != "LICENSED" {
+			result.IsValid = false
+			result.Reason = "app_not_licensed"
+			return result, nil
+		}
+	}
+
+	verdicts := []string{}
+	if payload.DeviceIntegrity != nil {
+		verdicts = payload.DeviceIntegrity.DeviceRecognitionVerdict
+	}
+	result.DeviceIntegrity = bestDeviceIntegrity(verdicts)
+
+	if hasIntegrityVerdict(verdicts, "MEETS_STRONG_INTEGRITY") {
+		result.IsValid = true
+		return result, nil
+	}
+	if s.playIntegrityAllowBasic && hasIntegrityVerdict(verdicts, "MEETS_BASIC_INTEGRITY") {
+		result.IsValid = true
+		return result, nil
+	}
+
+	result.IsValid = false
+	result.Reason = "device_integrity_failed"
 
 	return result, nil
 }
@@ -170,18 +234,14 @@ func (s *AttestationService) verifyDCAppAttest(
 		Timestamp: time.Now(),
 	}
 
-	// iOS App Attest verification logic:
-	// 1. Verify the CBOR attestation object
-	// 2. Validate the certificate chain from Apple's Root CA
-	// 3. Extract the public key and associate it with the DeviceID
-	
-	if req.Token == "" || req.KeyID == "" {
+	if req.Token == "" {
 		result.IsValid = false
-		result.Reason = "missing_token_or_keyid"
+		result.Reason = "missing_token"
 		return result, nil
 	}
 
-	if s.appleTeamID == "" || s.appleKeyID == "" {
+	appID := s.appleAppID()
+	if appID == "" {
 		if s.allowBypass {
 			result.IsValid = true
 			result.DeviceIntegrity = "BYPASS_ENABLED"
@@ -192,11 +252,42 @@ func (s *AttestationService) verifyDCAppAttest(
 		return result, nil
 	}
 
-	// For production, integrate with a CBOR/COSE library to parse the attestation object
-	result.IsValid = false
-	result.Reason = "dcappattest_unimplemented"
+	var aar attestation.AuthenticatorAttestationResponse
+	if err := json.Unmarshal([]byte(req.Token), &aar); err != nil {
+		result.IsValid = false
+		result.Reason = "invalid_attestation_format"
+		return result, nil
+	}
 
+	publicKey, receipt, err := aar.Verify(appID, s.appleProduction)
+	if err != nil {
+		result.IsValid = false
+		result.Reason = "dcappattest_verification_failed"
+		return result, err
+	}
+
+	_ = receipt // Store receipt for fraud assessment if needed
+	_ = publicKey // Store public key for assertion verification if needed
+
+	result.IsValid = true
+	result.DeviceIntegrity = "MEETS_STRONG_INTEGRITY"
 	return result, nil
+}
+
+func (s *AttestationService) appleAppID() string {
+	if s.appleTeamID == "" || s.appleBundleID == "" {
+		return ""
+	}
+	return s.appleTeamID + "." + s.appleBundleID
+}
+
+// GenerateChallenge returns a random base64url-encoded challenge for iOS App Attest.
+func (s *AttestationService) GenerateChallenge(ctx context.Context) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // storeAttestation stores attestation record in database
@@ -239,4 +330,52 @@ func (s *AttestationService) ShouldUseHoneypot(result *AttestationResult) bool {
 	}
 
 	return false // Valid attestation with strong integrity = no honeypot
+}
+
+func (s *AttestationService) initPlayIntegrityClient(ctx context.Context) error {
+	s.playIntegrityInitOnce.Do(func() {
+		if s.playIntegrityPackageName == "" {
+			s.playIntegrityInitErr = errors.New("missing package name")
+			return
+		}
+
+		opts := []option.ClientOption{}
+		if s.playIntegrityCredentialsFile != "" {
+			opts = append(opts, option.WithCredentialsFile(s.playIntegrityCredentialsFile))
+		} else if s.playIntegrityCredentialsJSON != "" {
+			opts = append(opts, option.WithCredentialsJSON([]byte(s.playIntegrityCredentialsJSON)))
+		}
+
+		service, err := playintegrity.NewService(ctx, opts...)
+		if err != nil {
+			s.playIntegrityInitErr = err
+			return
+		}
+
+		s.playIntegrityClient = service
+	})
+
+	return s.playIntegrityInitErr
+}
+
+func hasIntegrityVerdict(verdicts []string, verdict string) bool {
+	for _, value := range verdicts {
+		if value == verdict {
+			return true
+		}
+	}
+	return false
+}
+
+func bestDeviceIntegrity(verdicts []string) string {
+	if hasIntegrityVerdict(verdicts, "MEETS_STRONG_INTEGRITY") {
+		return "MEETS_STRONG_INTEGRITY"
+	}
+	if hasIntegrityVerdict(verdicts, "MEETS_DEVICE_INTEGRITY") {
+		return "MEETS_DEVICE_INTEGRITY"
+	}
+	if hasIntegrityVerdict(verdicts, "MEETS_BASIC_INTEGRITY") {
+		return "MEETS_BASIC_INTEGRITY"
+	}
+	return "UNKNOWN"
 }

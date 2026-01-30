@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"rendezvous/internal/db"
-	// "github.com/LumenLink-org/lumenlink/rendezvous/internal/db"
 )
 
 // AttestationResult represents the result of attestation verification
@@ -182,7 +181,13 @@ func (s *ConfigService) selectGateways(
 	// If attestation fails or is suspicious, include honeypots
 	if attestationResult == nil || !attestationResult.IsValid {
 		// Add honeypot gateways
-		// TODO: Implement GetHoneypotGateways in db package
+		honeypots, err := s.db.GetHoneypotGateways(ctx, region)
+		if err != nil {
+			return nil, err
+		}
+		if len(honeypots) > 0 {
+			gateways = append(honeypots, gateways...)
+		}
 	}
 
 	// Calculate load based on current users and max users
@@ -209,7 +214,7 @@ func (s *ConfigService) selectGateways(
 			Transports: gw.TransportTypes,
 			Region:     gw.Region,
 			Load:       s.calculateLoad(gw),
-			IsHoneypot: false, // TODO: Add honeypot flag to Gateway model
+			IsHoneypot: gw.IsHoneypot,
 			PublicKey:  gw.PublicKey,
 		}
 	}

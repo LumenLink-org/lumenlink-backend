@@ -1,13 +1,17 @@
-// module github.com/LumenLink-org/lumenlink-backend/server/rendezvous
-
 module rendezvous
 
 go 1.21
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/bas-d/appattest v0.1.0
+	github.com/gin-contrib/cors v1.7.2
 	github.com/gin-gonic/gin v1.9.1
+	golang.org/x/time v0.5.0
+	github.com/prometheus/client_golang v1.19.0
 	github.com/golang-migrate/migrate/v4 v4.16.2
 	github.com/lib/pq v1.10.9
+	google.golang.org/api v0.172.0
 )
 
 require (

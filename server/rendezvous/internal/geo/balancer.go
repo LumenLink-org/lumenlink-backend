@@ -2,11 +2,12 @@ package geo
 
 import (
 	"context"
-	"math/rand"
-	"time"
+	"os"
+	"strconv"
+	"strings"
+	"unicode"
 
 	"rendezvous/internal/db"
-	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
 )
 
 // GeoBalancer handles geo-load balancing for gateway selection
@@ -77,6 +78,8 @@ func (b *GeoBalancer) GetLoadBalancedGateways(
 	// Simple load-based sorting
 	for i := 0; i < len(sorted)-1; i++ {
 		for j := i + 1; j < len(sorted); j++ {
+			sorted[i].Load = calculateGatewayLoad(sorted[i])
+			sorted[j].Load = calculateGatewayLoad(sorted[j])
 			if sorted[i].Load > sorted[j].Load {
 				sorted[i], sorted[j] = sorted[j], sorted[i]
 			}
@@ -97,9 +100,26 @@ func (b *GeoBalancer) UpdateGatewayLoad(
 	gatewayID string,
 	load float64,
 ) error {
-	// TODO: Implement database update
-	// This would update the gateways table with new load value
-	return nil
+	if load < 0 {
+		load = 0
+	}
+	if load > 1 {
+		load = 1
+	}
+
+	_, err := b.db.Pool().ExecContext(
+		ctx,
+		`UPDATE gateways
+		 SET current_users = CASE
+			 WHEN max_users IS NULL THEN current_users
+			 ELSE LEAST(GREATEST(ROUND($1 * max_users)::int, 0), max_users)
+		 END,
+		 last_seen = NOW()
+		 WHERE id = $2`,
+		load,
+		gatewayID,
+	)
+	return err
 }
 
 // isRegionAvailable checks if a region has available gateways
@@ -121,14 +141,22 @@ func (b *GeoBalancer) isRegionAvailable(ctx context.Context, region string) (boo
 
 // findNearestRegion finds the nearest available region to the client
 func (b *GeoBalancer) findNearestRegion(ctx context.Context, clientRegion string) (string, error) {
-	// TODO: Implement region proximity calculation
-	// This would use a region distance matrix or geolocation
-	
-	// Placeholder: return a random available region
-	regions := []string{"us-east-1", "us-west-1", "eu-west-1", "ap-southeast-1"}
-	
-	rand.Seed(time.Now().UnixNano())
-	for _, region := range regions {
+	regionPreference := map[string][]string{
+		"us-east-1":     {"us-east-1", "us-west-1", "eu-west-1", "ap-southeast-1"},
+		"us-west-1":     {"us-west-1", "us-east-1", "ap-southeast-1", "eu-west-1"},
+		"eu-west-1":     {"eu-west-1", "eu-central-1", "us-east-1", "ap-southeast-1"},
+		"eu-central-1":  {"eu-central-1", "eu-west-1", "us-east-1", "ap-southeast-1"},
+		"ap-southeast-1": {"ap-southeast-1", "ap-east-1", "us-west-1", "eu-west-1"},
+		"ap-east-1":     {"ap-east-1", "ap-southeast-1", "us-west-1", "eu-west-1"},
+		"me-south-1":    {"me-south-1", "eu-central-1", "eu-west-1", "ap-southeast-1"},
+	}
+
+	candidates, ok := regionPreference[clientRegion]
+	if !ok {
+		candidates = []string{"us-east-1", "us-west-1", "eu-west-1", "ap-southeast-1"}
+	}
+
+	for _, region := range candidates {
 		available, err := b.isRegionAvailable(ctx, region)
 		if err == nil && available {
 			return region, nil
@@ -144,10 +172,17 @@ func (b *GeoBalancer) GetRolloutPercentage(
 	configVersion string,
 	region string,
 ) (int, error) {
-	// TODO: Implement incremental rollout logic
-	// This would check rollout configuration from database
-	
-	// Placeholder: return 100% (full rollout)
+	_ = ctx
+
+	keys := rolloutEnvKeys(configVersion, region)
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			if percent, err := strconv.Atoi(value); err == nil {
+				return clampPercentage(percent), nil
+			}
+		}
+	}
+
 	return 100, nil
 }
 
@@ -179,4 +214,54 @@ func hashString(s string) int {
 		hash = -hash
 	}
 	return hash % 100
+}
+
+func calculateGatewayLoad(gw *db.Gateway) float64 {
+	if gw.MaxUsers == nil || *gw.MaxUsers == 0 {
+		return 0.5
+	}
+	return float64(gw.CurrentUsers) / float64(*gw.MaxUsers)
+}
+
+func rolloutEnvKeys(configVersion, region string) []string {
+	var keys []string
+	normalizedVersion := normalizeRolloutKey(configVersion)
+	normalizedRegion := normalizeRolloutKey(region)
+
+	if normalizedVersion != "" && normalizedRegion != "" {
+		keys = append(keys, "LUMENLINK_ROLLOUT_PERCENTAGE_"+normalizedVersion+"_"+normalizedRegion)
+	}
+	if normalizedVersion != "" {
+		keys = append(keys, "LUMENLINK_ROLLOUT_PERCENTAGE_"+normalizedVersion)
+	}
+	if normalizedRegion != "" {
+		keys = append(keys, "LUMENLINK_ROLLOUT_PERCENTAGE_"+normalizedRegion)
+	}
+	keys = append(keys, "LUMENLINK_ROLLOUT_PERCENTAGE")
+
+	return keys
+}
+
+func normalizeRolloutKey(value string) string {
+	if value == "" {
+		return ""
+	}
+	upper := strings.ToUpper(value)
+	normalized := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return '_'
+	}, upper)
+	return strings.Trim(normalized, "_")
+}
+
+func clampPercentage(percent int) int {
+	if percent < 0 {
+		return 0
+	}
+	if percent > 100 {
+		return 100
+	}
+	return percent
 }

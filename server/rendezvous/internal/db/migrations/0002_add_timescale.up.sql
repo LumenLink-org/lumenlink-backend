@@ -14,19 +14,25 @@ SELECT create_hypertable(
     if_not_exists => TRUE
 );
 
--- Optional TimescaleDB optimizations (skip if unsupported)
+-- Optional: compression policy (skip if columnstore not enabled)
 DO $$
 BEGIN
-    -- Add compression policy (compress data older than 7 days)
-    -- This reduces storage requirements for historical data
     PERFORM add_compression_policy('operator_metrics', INTERVAL '7 days', if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping compression policy: %', SQLERRM;
+END $$;
 
-    -- Add retention policy (drop data older than 90 days)
-    -- Adjust retention period as needed
+-- Optional: retention policy
+DO $$
+BEGIN
     PERFORM add_retention_policy('operator_metrics', INTERVAL '90 days', if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping retention policy: %', SQLERRM;
+END $$;
 
-    -- Create continuous aggregate for hourly statistics
-    -- Pre-aggregates data for faster queries
+-- Optional: continuous aggregates (skip if unsupported)
+DO $$
+BEGIN
     CREATE MATERIALIZED VIEW IF NOT EXISTS operator_metrics_hourly
     WITH (timescaledb.continuous) AS
     SELECT
@@ -43,11 +49,9 @@ BEGIN
     FROM operator_metrics
     GROUP BY bucket, gateway_id;
 
-    -- Create index on continuous aggregate
     CREATE INDEX IF NOT EXISTS idx_operator_metrics_hourly_bucket_gateway
         ON operator_metrics_hourly(bucket DESC, gateway_id);
 
-    -- Create continuous aggregate for daily statistics
     CREATE MATERIALIZED VIEW IF NOT EXISTS operator_metrics_daily
     WITH (timescaledb.continuous) AS
     SELECT
@@ -64,11 +68,9 @@ BEGIN
     FROM operator_metrics
     GROUP BY bucket, gateway_id;
 
-    -- Create index on daily aggregate
     CREATE INDEX IF NOT EXISTS idx_operator_metrics_daily_bucket_gateway
         ON operator_metrics_daily(bucket DESC, gateway_id);
 
-    -- Refresh policy for continuous aggregates (refresh every hour)
     PERFORM add_continuous_aggregate_policy('operator_metrics_hourly',
         start_offset => INTERVAL '3 hours',
         end_offset => INTERVAL '1 hour',
@@ -83,5 +85,5 @@ BEGIN
         if_not_exists => TRUE
     );
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Skipping TimescaleDB optimizations: %', SQLERRM;
+    RAISE NOTICE 'Skipping continuous aggregates: %', SQLERRM;
 END $$;

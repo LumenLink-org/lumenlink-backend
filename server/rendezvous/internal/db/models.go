@@ -18,6 +18,7 @@ type Gateway struct {
 	CurrentUsers     int
 	MaxUsers         *int
 	Status           string
+	IsHoneypot       bool
 	Load             float64 // Current load 0.0-1.0
 	CreatedAt        time.Time
 	LastSeen         *time.Time

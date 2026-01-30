@@ -2,6 +2,8 @@
 
 This directory contains SQL migration files for the LumenLink database schema.
 
+**Website:** [lumenlink.org](https://lumenlink.org) · [Documentation](https://lumenlink.org/en/docs) · **API:** [api.lumenlink.org](https://api.lumenlink.org)
+
 ## Migration Files
 
 - `0001_initial_schema.up.sql` - Creates all core tables (gateways, config_packs, attestations, etc.)

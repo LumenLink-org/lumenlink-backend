@@ -15,8 +15,30 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// RunMigrations runs all pending database migrations
+// RunMigrations runs all pending database migrations.
+// Retries connect up to 5 times with exponential backoff if DB is not yet ready.
 func RunMigrations(databaseURL string) error {
+	var lastErr error
+	const maxAttempts = 5
+	baseDelay := 2 * time.Second
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = runMigrationsOnce(databaseURL)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == maxAttempts {
+			return fmt.Errorf("migrations failed after %d attempts: %w", maxAttempts, lastErr)
+		}
+		delay := baseDelay * time.Duration(1<<uint(attempt-1))
+		if delay > 10*time.Second {
+			delay = 10 * time.Second
+		}
+		time.Sleep(delay)
+	}
+	return lastErr
+}
+
+func runMigrationsOnce(databaseURL string) error {
 	// Open database connection
 	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -8,10 +9,7 @@ import (
 	"rendezvous/internal/config"
 	"rendezvous/internal/db"
 	"rendezvous/internal/geo"
-	// "github.com/unitech-for-good/lumenlink/rendezvous/internal/attestation"
-    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/config"
-    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/db"
-    // "github.com/unitech-for-good/lumenlink/rendezvous/internal/geo"
+	"rendezvous/internal/metrics"
 )
 
 // Handler handles HTTP API requests
@@ -20,6 +18,27 @@ type Handler struct {
 	attestationService *attestation.AttestationService
 	geoBalancer        *geo.GeoBalancer
 	database           *db.Database
+}
+
+var allowedGatewayStatuses = map[string]struct{}{
+	"active":      {},
+	"degraded":    {},
+	"offline":     {},
+	"maintenance": {},
+}
+
+var allowedDiscoveryChannels = map[string]struct{}{
+	"gps":        {},
+	"fm_rds":     {},
+	"dtv":        {},
+	"plc":        {},
+	"gsm_cb":     {},
+	"lte_sib":    {},
+	"iot_mqtt":   {},
+	"blockchain": {},
+	"satellite":  {},
+	"intranet":   {},
+	"social":     {},
 }
 
 // NewHandler creates a new API handler
@@ -110,6 +129,8 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		return
 	}
 
+	metrics.ConfigPackGenerated.WithLabelValues(region).Inc()
+
 	c.JSON(http.StatusOK, GetConfigResponse{
 		ConfigPack: pack,
 	})
@@ -146,6 +167,16 @@ type VerifyAttestationResponse struct {
 	Verified       bool   `json:"verified"`
 	DeviceIntegrity string `json:"device_integrity,omitempty"`
 	Reason         string `json:"reason,omitempty"`
+}
+
+// GetAttestationChallenge returns a random challenge for iOS App Attest
+func (h *Handler) GetAttestationChallenge(c *gin.Context) {
+	challenge, err := h.attestationService.GenerateChallenge(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "challenge_generation_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"challenge": challenge})
 }
 
 // VerifyAttestation handles attestation verification requests
@@ -206,8 +237,39 @@ func (h *Handler) HandleGatewayStatus(c *gin.Context) {
 		return
 	}
 
-	// TODO: Store gateway status in database
-	// This would update the gateways table and insert into operator_metrics
+	if _, ok := allowedGatewayStatuses[req.Status]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_status"})
+		return
+	}
+	if req.UsersConnected < 0 || req.BandwidthUsedMbps < 0 || req.PacketsForwarded < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_metrics"})
+		return
+	}
+	if req.UptimePercent < 0 || req.UptimePercent > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_uptime"})
+		return
+	}
+
+	if h.database != nil {
+		err := h.database.RecordGatewayStatus(
+			c.Request.Context(),
+			req.GatewayID,
+			req.Status,
+			req.UsersConnected,
+			req.BandwidthUsedMbps,
+			req.PacketsForwarded,
+			req.UptimePercent,
+		)
+		if err != nil {
+			if errors.Is(err, db.ErrGatewayNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "gateway_not_found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "gateway_status_store_failed"})
+			return
+		}
+		metrics.GatewayStatusUpdates.Inc()
+	}
 
 	c.JSON(http.StatusOK, GatewayStatusResponse{
 		Acknowledged: true,
@@ -236,8 +298,59 @@ func (h *Handler) HandleDiscoveryLog(c *gin.Context) {
 		return
 	}
 
-	// TODO: Store discovery log in database
-	// This would insert into discovery_logs table
+	if _, ok := allowedDiscoveryChannels[req.ChannelType]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_channel_type"})
+		return
+	}
+	if req.LatencyMs < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_latency"})
+		return
+	}
+
+	if h.database != nil {
+		var gatewayID *string
+		if req.GatewayID != "" {
+			gatewayID = &req.GatewayID
+		}
+		clientIP := c.ClientIP()
+		var clientIPPtr *string
+		if clientIP != "" {
+			clientIPPtr = &clientIP
+		}
+		var regionPtr *string
+		country := c.GetHeader("CF-IPCountry")
+		if country != "" {
+			region := h.mapCountryToRegion(country)
+			regionPtr = &region
+		}
+		var latencyPtr *int
+		if req.LatencyMs > 0 {
+			latencyPtr = &req.LatencyMs
+		}
+		var errorPtr *string
+		if req.Error != "" {
+			errorPtr = &req.Error
+		}
+
+		if err := h.database.RecordDiscoveryLog(
+			c.Request.Context(),
+			req.ChannelType,
+			gatewayID,
+			clientIPPtr,
+			regionPtr,
+			req.Success,
+			latencyPtr,
+			errorPtr,
+		); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "discovery_log_store_failed"})
+			return
+		}
+		successLabel := "false"
+		if req.Success {
+			successLabel = "true"
+		}
+		metrics.DiscoveryLogs.WithLabelValues(req.ChannelType, successLabel).Inc()
+	}
 
 	c.JSON(http.StatusOK, DiscoveryLogResponse{
 		Logged: true,
@@ -273,9 +386,15 @@ func (h *Handler) GetGateways(c *gin.Context) {
 			uptimePercent = 98.0 // Placeholder
 		}
 
+		callsign := "OP-unknown"
+		if len(gw.ID) >= 8 {
+			callsign = "OP-" + gw.ID[:8]
+		} else if gw.ID != "" {
+			callsign = "OP-" + gw.ID
+		}
 		gatewayList = append(gatewayList, gin.H{
 			"id":            gw.ID,
-			"callsign":      "OP-" + gw.ID[:8], // Generate callsign from ID
+			"callsign":      callsign,
 			"region":        gw.Region,
 			"status":        gw.Status,
 			"current_users": gw.CurrentUsers,
