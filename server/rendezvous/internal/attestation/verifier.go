@@ -177,14 +177,12 @@ func (s *AttestationService) verifyPlayIntegrity(
 		return result, nil
 	}
 
-	if payload.RequestDetails.TimestampMillis != "" {
-		if timestampMs, err := strconv.ParseInt(payload.RequestDetails.TimestampMillis, 10, 64); err == nil {
-			tokenTime := time.UnixMilli(timestampMs)
-			if time.Since(tokenTime) > s.playIntegrityMaxAge {
-				result.IsValid = false
-				result.Reason = "attestation_expired"
-				return result, nil
-			}
+	if payload.RequestDetails.TimestampMillis != 0 {
+		tokenTime := time.UnixMilli(payload.RequestDetails.TimestampMillis)
+		if time.Since(tokenTime) > s.playIntegrityMaxAge {
+			result.IsValid = false
+			result.Reason = "attestation_expired"
+			return result, nil
 		}
 	}
 
